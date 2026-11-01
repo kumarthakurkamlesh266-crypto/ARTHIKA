@@ -27,7 +27,9 @@ class AccountingAiToolDispatcher(
     private val accountingEngine: AccountingEngine,
     private val reconciliationEngine: ReconciliationEngine
 ) {
-    private val currencyFormat = NumberFormat.getCurrencyInstance(Locale.US)
+    private val currencyFormat = object {
+        fun format(amount: Double): String = com.example.ui.components.IndianCurrencyFormatter.format(amount, "₹")
+    }
     private val dateFormat = SimpleDateFormat("MMM dd, yyyy", Locale.US)
 
     /**

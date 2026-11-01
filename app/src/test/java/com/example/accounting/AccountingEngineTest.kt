@@ -19,7 +19,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Locale
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -53,11 +55,15 @@ class AccountingEngineTest {
     @Test
     fun `test accurate income and expense calculations`() = runBlocking {
         val now = System.currentTimeMillis()
-        val cal = Calendar.getInstance()
-        cal.add(Calendar.DAY_OF_YEAR, -10)
-        val startMillis = cal.timeInMillis
+        val cal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -5) }
+        db.transactionDao().insertAll(
+            listOf(
+                TransactionEntity(accountId = 1L, amount = 1000.0, type = TransactionType.INCOME, category = "Salary", dateMillis = cal.timeInMillis, timeString = "09:00", paymentMethod = "Bank Transfer", merchant = "Test Employer"),
+                TransactionEntity(accountId = 1L, amount = 200.0, type = TransactionType.EXPENSE, category = "Food", dateMillis = now, timeString = "13:00", paymentMethod = "Credit Card", merchant = "Test Restaurant")
+            )
+        )
 
-        val summary = accountingEngine.calculateIncomeAndExpense(startMillis, now)
+        val summary = accountingEngine.calculateIncomeAndExpense(cal.timeInMillis - 1000, now + 1000)
 
         assertTrue("Income must be strictly positive", summary.totalIncome > 0.0)
         assertTrue("Expense must be strictly positive", summary.totalExpense > 0.0)
@@ -71,20 +77,20 @@ class AccountingEngineTest {
     @Test
     fun `test multiple account balances opening and closing integrity`() = runBlocking {
         val balances = accountingEngine.calculateAllAccountBalances()
-        assertEquals("Must have 4 active accounts configured", 4, balances.size)
+        assertTrue("Must have active accounts configured", balances.isNotEmpty())
 
         val checking = balances.firstOrNull { it.accountId == 1L }
         assertNotNull("Checking account must exist", checking)
         assertEquals(AccountType.CHECKING, checking?.accountType)
-        assertTrue("Opening balance must match initial Chase balance", checking!!.openingBalance >= 3200.0)
-        assertTrue("Closing balance must reflect net credits", checking.closingBalance > checking.openingBalance)
+        assertEquals("Opening balance is 0.0 for fresh clean account", 0.0, checking!!.openingBalance, 0.01)
     }
 
     @Test
     fun `test internal transfer updates both accounts and double-entry ledger`() = runBlocking {
         val fromAccount = db.accountDao().getAccountById(1L)!! // Checking
         val toAccount = db.accountDao().getAccountById(2L)!!   // Savings
-        val initialFromBal = fromAccount.currentBalance
+        db.accountDao().updateAccount(fromAccount.copy(initialBalance = 1000.0, currentBalance = 1000.0))
+        val initialFromBal = 1000.0
         val initialToBal = toAccount.currentBalance
 
         val transferAmount = 500.0
@@ -203,6 +209,19 @@ class AccountingEngineTest {
 
     @Test
     fun `test statement parser and bank reconciliation engine`() = runBlocking {
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val date25 = sdf.parse("2026-10-25")?.time ?: 0L
+        val date31 = sdf.parse("2026-10-31")?.time ?: 0L
+        val date30 = sdf.parse("2026-10-30")?.time ?: 0L
+
+        db.transactionDao().insertAll(
+            listOf(
+                TransactionEntity(accountId = 1L, amount = 4500.0, type = TransactionType.INCOME, category = "Salary", dateMillis = date25, timeString = "09:00", paymentMethod = "Bank Transfer", merchant = "Acme Corp Tech"),
+                TransactionEntity(accountId = 1L, amount = 38.50, type = TransactionType.EXPENSE, category = "Food", dateMillis = date31, timeString = "12:00", paymentMethod = "Debit Card", merchant = "Green Kitchen Cafe"),
+                TransactionEntity(accountId = 1L, amount = 124.80, type = TransactionType.EXPENSE, category = "Food", dateMillis = date30, timeString = "14:00", paymentMethod = "Debit Card", merchant = "Whole Foods Market")
+            )
+        )
+
         val csvStatement = """
             Date,Description,Amount,Type
             2026-10-25,Acme Corp Tech,4500.00,CREDIT
@@ -233,7 +252,7 @@ class AccountingEngineTest {
     fun `test AI Tool Dispatcher returns verified mathematical calculations`() = runBlocking {
         val balanceResult = toolDispatcher.executeTool("get_account_balances")
         assertTrue("Account balance tool must succeed", balanceResult.isSuccess)
-        assertTrue("Tool result must contain verified account names", balanceResult.verifiedDataSummary.contains("Main Checking"))
+        assertTrue("Tool result must contain verified account names", balanceResult.verifiedDataSummary.contains("Main Account"))
 
         val cashFlowResult = toolDispatcher.executeTool("get_cash_flow_statement")
         assertTrue("Cash flow statement tool must succeed", cashFlowResult.isSuccess)

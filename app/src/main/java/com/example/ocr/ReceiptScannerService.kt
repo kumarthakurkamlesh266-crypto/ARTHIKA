@@ -228,8 +228,10 @@ class ReceiptScannerService(private val context: Context) {
                 })
             }
 
+            val model = com.example.ai.GeminiConfig.getModel(context)
+            val requestUrl = com.example.ai.GeminiConfig.getGenerateContentUrl(apiKey, model)
             val request = Request.Builder()
-                .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey")
+                .url(requestUrl)
                 .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 

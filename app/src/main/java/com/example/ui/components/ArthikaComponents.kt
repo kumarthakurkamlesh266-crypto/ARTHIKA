@@ -98,19 +98,12 @@ fun getCategoryIcon(category: String): ImageVector {
 }
 
 object FastFormatters {
-    private val currencyFormatThreadLocal = ThreadLocal.withInitial {
-        NumberFormat.getNumberInstance(Locale.US).apply {
-            minimumFractionDigits = 2
-            maximumFractionDigits = 2
-        }
-    }
-
     private val dateFormatThreadLocal = ThreadLocal.withInitial {
         SimpleDateFormat("MMM dd", Locale.US)
     }
 
-    fun formatCurrency(amount: Double, symbol: String = "$"): String {
-        return "$symbol${currencyFormatThreadLocal.get()!!.format(amount)}"
+    fun formatCurrency(amount: Double, symbol: String = "₹"): String {
+        return IndianCurrencyFormatter.format(amount, symbol)
     }
 
     fun formatDate(millis: Long): String {
@@ -118,7 +111,7 @@ object FastFormatters {
     }
 }
 
-fun formatCurrency(amount: Double, symbol: String = "$"): String {
+fun formatCurrency(amount: Double, symbol: String = "₹"): String {
     return FastFormatters.formatCurrency(amount, symbol)
 }
 

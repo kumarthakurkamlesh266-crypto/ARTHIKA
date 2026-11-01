@@ -536,7 +536,10 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     fun hasApiKeyConfigured(): Boolean = apiKeyManager.hasKey()
 
-    suspend fun testApiKey(apiKey: String): com.example.data.ApiKeyStatus = apiKeyManager.testApiKey(apiKey)
+    fun getSelectedModel(): String = apiKeyManager.getSelectedModel()
+
+    suspend fun testApiKey(apiKey: String, modelOverride: String? = null): com.example.data.ApiKeyStatus =
+        apiKeyManager.testApiKey(apiKey, modelOverride)
 
     fun scanReceiptUri(uri: Uri) {
         viewModelScope.launch {
@@ -655,17 +658,21 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         pinCode: String,
         isPinEnabled: Boolean,
         userName: String,
-        geminiApiKey: String = ""
+        geminiApiKey: String = "",
+        selectedModel: String = com.example.ai.GeminiConfig.DEFAULT_MODEL
     ) {
-        apiKeyManager.saveApiKey(geminiApiKey)
+        if (geminiApiKey.isNotBlank()) {
+            apiKeyManager.saveApiKey(geminiApiKey)
+        }
+        apiKeyManager.setSelectedModel(selectedModel)
         viewModelScope.launch {
             val updated = BudgetEntity(
                 id = 1,
                 monthlyLimit = monthlyLimit,
-                currencySymbol = currencySymbol,
+                currencySymbol = currencySymbol.trim().ifBlank { "₹" },
                 pinCode = pinCode,
                 isPinEnabled = isPinEnabled,
-                userName = userName
+                userName = userName.trim().ifBlank { "User" }
             )
             repository.updateBudget(updated)
             if (isPinEnabled && pinCode.isNotBlank()) {

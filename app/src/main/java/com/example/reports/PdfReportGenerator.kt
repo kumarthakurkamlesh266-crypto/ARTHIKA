@@ -21,7 +21,9 @@ import java.util.Locale
 
 class PdfReportGenerator(private val context: Context) {
 
-    private val currencyFormat = NumberFormat.getCurrencyInstance(Locale.US)
+    private val currencyFormat = object {
+        fun format(amount: Double): String = com.example.ui.components.IndianCurrencyFormatter.format(amount, "₹")
+    }
     private val dateFormat = SimpleDateFormat("MMM dd, yyyy", Locale.US)
 
     suspend fun generatePdfReport(

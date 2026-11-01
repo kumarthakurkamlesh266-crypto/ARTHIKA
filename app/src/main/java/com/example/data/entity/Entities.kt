@@ -13,9 +13,9 @@ import com.example.data.model.TransactionType
 data class UserEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 1L,
-    val name: String = "Alex",
-    val email: String = "alex@arthika.local",
-    val currency: String = "USD",
+    val name: String = "User",
+    val email: String = "user@arthika.local",
+    val currency: String = "INR",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )
@@ -35,7 +35,7 @@ data class AccountEntity(
     val type: AccountType,
     val currentBalance: Double = 0.0,
     val initialBalance: Double = 0.0,
-    val currency: String = "USD",
+    val currency: String = "INR",
     val accountNumberLast4: String = "0000",
     val institutionName: String = "Bank",
     val isActive: Boolean = true,
@@ -82,8 +82,8 @@ data class TransactionEntity(
     val type: TransactionType,
     val category: String,
     val dateMillis: Long,
-    val timeString: String,
-    val paymentMethod: String,
+    val timeString: String = "12:00",
+    val paymentMethod: String = "Cash",
     val notes: String = "",
     val merchant: String = "",
     val receiptUri: String? = null,
@@ -219,11 +219,11 @@ data class BudgetEntity(
     @PrimaryKey
     val id: Int = 1,
     val userId: Long = 1L,
-    val monthlyLimit: Double = 2500.0,
-    val currencySymbol: String = "$",
+    val monthlyLimit: Double = 50000.0,
+    val currencySymbol: String = "₹",
     val isPinEnabled: Boolean = false,
     val pinCode: String = "",
-    val userName: String = "Alex",
+    val userName: String = "User",
     val updatedAt: Long = System.currentTimeMillis()
 )
 

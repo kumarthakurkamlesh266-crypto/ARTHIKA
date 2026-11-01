@@ -370,17 +370,7 @@ fun ReconciliationTabContent(
     onReconcileStatement: (accountId: Long, content: String, fileName: String, callback: (FullReconciliationSummary?) -> Unit) -> Unit
 ) {
     var selectedAccountId by remember { mutableLongStateOf(accounts.firstOrNull()?.id ?: 1L) }
-    var statementText by remember {
-        mutableStateOf(
-            """Date,Description,Amount,Type
-2026-10-25,Acme Corp Tech,4500.00,CREDIT
-2026-10-28,DesignStudio Global,650.00,CREDIT
-2026-10-31,Green Kitchen Cafe,38.50,DEBIT
-2026-10-30,Whole Foods Market,124.80,DEBIT
-2026-10-26,Metropolitan Power,210.00,DEBIT
-2026-10-29,Bank Monthly Maintenance Fee,12.00,DEBIT"""
-        )
-    }
+    var statementText by remember { mutableStateOf("") }
     var summaryResult by remember { mutableStateOf<FullReconciliationSummary?>(null) }
     var isReconciling by remember { mutableStateOf(false) }
 
@@ -418,21 +408,15 @@ fun ReconciliationTabContent(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Bank Statement Data (CSV / Text)", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = ArthikaTextSecondary)
-            Text(
-                "Reset Sample",
-                fontSize = 12.sp,
-                color = ArthikaPrimary,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.clickable {
-                    statementText = """Date,Description,Amount,Type
-2026-10-25,Acme Corp Tech,4500.00,CREDIT
-2026-10-28,DesignStudio Global,650.00,CREDIT
-2026-10-31,Green Kitchen Cafe,38.50,DEBIT
-2026-10-30,Whole Foods Market,124.80,DEBIT
-2026-10-26,Metropolitan Power,210.00,DEBIT
-2026-10-29,Bank Monthly Maintenance Fee,12.00,DEBIT"""
-                }
-            )
+            if (statementText.isNotBlank()) {
+                Text(
+                    "Clear",
+                    fontSize = 12.sp,
+                    color = ArthikaTextSecondary,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable { statementText = "" }
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -444,6 +428,13 @@ fun ReconciliationTabContent(
                 .fillMaxWidth()
                 .height(130.dp)
                 .testTag("statement_input_field"),
+            placeholder = {
+                Text(
+                    "Paste CSV statement (Date,Description,Amount,Type)...",
+                    fontSize = 11.sp,
+                    color = ArthikaTextSecondary
+                )
+            },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = ArthikaPrimary,
                 unfocusedBorderColor = ArthikaBorder,

@@ -110,12 +110,16 @@ class ReconciliationEngine(private val db: AppDatabase) {
 
             // Check for balance header metadata
             if (lower.startsWith("opening balance:") || lower.startsWith("starting balance:")) {
-                val num = line.substringAfter(":").trim().replace("$", "").toDoubleOrNull()
+                val num = line.substringAfter(":").trim()
+                    .replace("$", "").replace("₹", "").replace("Rs.", "").replace("INR", "").replace(",", "")
+                    .trim().toDoubleOrNull()
                 if (num != null) detectedOpeningBal = num
                 continue
             }
             if (lower.startsWith("closing balance:") || lower.startsWith("ending balance:")) {
-                val num = line.substringAfter(":").trim().replace("$", "").toDoubleOrNull()
+                val num = line.substringAfter(":").trim()
+                    .replace("$", "").replace("₹", "").replace("Rs.", "").replace("INR", "").replace(",", "")
+                    .trim().toDoubleOrNull()
                 if (num != null) detectedClosingBal = num
                 continue
             }
@@ -146,7 +150,9 @@ class ReconciliationEngine(private val db: AppDatabase) {
             val desc = tokens[1]
 
             // 3. Amount & Type
-            val rawAmountStr = tokens[2].replace("$", "").replace(",", "")
+            val rawAmountStr = tokens[2]
+                .replace("$", "").replace("₹", "").replace("Rs.", "").replace("INR", "").replace(",", "")
+                .trim()
             val parsedAmount = rawAmountStr.toDoubleOrNull() ?: 0.0
 
             var isCredit = false
@@ -166,7 +172,9 @@ class ReconciliationEngine(private val db: AppDatabase) {
             }
 
             if (tokens.size >= 5) {
-                val bal = tokens[4].replace("$", "").replace(",", "").toDoubleOrNull()
+                val bal = tokens[4]
+                    .replace("$", "").replace("₹", "").replace("Rs.", "").replace("INR", "").replace(",", "")
+                    .trim().toDoubleOrNull()
                 if (bal != null) runningBal = bal
             }
 

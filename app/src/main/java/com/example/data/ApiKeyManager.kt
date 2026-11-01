@@ -3,6 +3,7 @@ package com.example.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.BuildConfig
+import com.example.ai.GeminiConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -16,20 +17,54 @@ import java.util.concurrent.TimeUnit
 sealed class ApiKeyStatus {
     object Idle : ApiKeyStatus()
     object Checking : ApiKeyStatus()
-    data class Valid(val message: String = "API Key is valid and active") : ApiKeyStatus()
-    data class Invalid(val error: String) : ApiKeyStatus()
+
+    data class Valid(
+        val message: String = "Connected successfully to Gemini 3.8 Flash!",
+        val model: String = GeminiConfig.DEFAULT_MODEL,
+        val latencyMs: Long = 0
+    ) : ApiKeyStatus()
+
+    sealed class Invalid(
+        open val error: String,
+        open val actionableTip: String = ""
+    ) : ApiKeyStatus() {
+        data class BadKey(
+            override val error: String = "Invalid API Key: Rejected by Google Gemini.",
+            override val actionableTip: String = "Verify that you copied the complete key starting with 'AIzaSy...' from Google AI Studio."
+        ) : Invalid(error, actionableTip)
+
+        data class QuotaExceeded(
+            override val error: String = "Quota Limit Reached: Rate limit or daily token quota exceeded.",
+            override val actionableTip: String = "Wait 60 seconds before retrying or check your quota at https://aistudio.google.com."
+        ) : Invalid(error, actionableTip)
+
+        data class ModelUnsupported(
+            override val error: String = "Model Unsupported: The selected model is unavailable for this key/region.",
+            override val actionableTip: String = "Switch to 'gemini-3.8-flash' or another supported model in the settings."
+        ) : Invalid(error, actionableTip)
+
+        data class NetworkError(
+            override val error: String = "Network Connection Error: Unable to reach Google servers.",
+            override val actionableTip: String = "Check your device's Wi-Fi or mobile data connection and try again."
+        ) : Invalid(error, actionableTip)
+
+        data class GenericError(
+            override val error: String,
+            override val actionableTip: String = "Please verify your API key and network settings."
+        ) : Invalid(error, actionableTip)
+    }
 }
 
 class ApiKeyManager(private val context: Context) {
 
     private val prefs: SharedPreferences by lazy {
-        context.getSharedPreferences("arthika_api_settings", Context.MODE_PRIVATE)
+        context.getSharedPreferences("arthika_secure_api_settings", Context.MODE_PRIVATE)
     }
 
     private val client by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
             .build()
     }
 
@@ -62,11 +97,25 @@ class ApiKeyManager(private val context: Context) {
         return getApiKey().isNotBlank()
     }
 
-    suspend fun testApiKey(apiKey: String): ApiKeyStatus = withContext(Dispatchers.IO) {
+    fun getSelectedModel(): String {
+        return GeminiConfig.getModel(context)
+    }
+
+    fun setSelectedModel(model: String) {
+        GeminiConfig.setModel(context, model)
+    }
+
+    suspend fun testApiKey(apiKey: String, modelOverride: String? = null): ApiKeyStatus = withContext(Dispatchers.IO) {
         val key = apiKey.trim()
         if (key.isBlank()) {
-            return@withContext ApiKeyStatus.Invalid("API Key cannot be blank")
+            return@withContext ApiKeyStatus.Invalid.BadKey(
+                error = "API Key cannot be blank.",
+                actionableTip = "Enter your Google Gemini API key to test the connection."
+            )
         }
+
+        val model = modelOverride?.trim()?.ifBlank { null } ?: GeminiConfig.getModel(context)
+        val startTime = System.currentTimeMillis()
 
         try {
             val jsonBody = JSONObject().apply {
@@ -74,7 +123,7 @@ class ApiKeyManager(private val context: Context) {
                     put(JSONObject().apply {
                         val parts = JSONArray().apply {
                             put(JSONObject().apply {
-                                put("text", "Ping. Reply with 'OK'.")
+                                put("text", "Ping. Respond with 'OK'.")
                             })
                         }
                         put("parts", parts)
@@ -83,27 +132,106 @@ class ApiKeyManager(private val context: Context) {
                 put("contents", contents)
             }
 
+            val requestUrl = GeminiConfig.getGenerateContentUrl(key, model)
             val request = Request.Builder()
-                .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$key")
+                .url(requestUrl)
                 .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
             val response = client.newCall(request).execute()
+            val latencyMs = System.currentTimeMillis() - startTime
+            val responseCode = response.code
+            val responseBody = response.body?.string().orEmpty()
+
             if (response.isSuccessful) {
-                ApiKeyStatus.Valid("Connected successfully to Gemini 2.5 Flash!")
-            } else {
-                val errBody = response.body?.string() ?: ""
-                val msg = try {
-                    val root = JSONObject(errBody)
-                    val errorObj = root.optJSONObject("error")
-                    errorObj?.optString("message", "HTTP ${response.code}") ?: "HTTP ${response.code}"
-                } catch (e: Exception) {
-                    "HTTP ${response.code}: Check your key permissions"
+                val json = try { JSONObject(responseBody) } catch (e: Exception) { null }
+                val candidates = json?.optJSONArray("candidates")
+                if (candidates != null && candidates.length() > 0) {
+                    ApiKeyStatus.Valid(
+                        message = "Connected successfully to $model",
+                        model = model,
+                        latencyMs = latencyMs
+                    )
+                } else {
+                    ApiKeyStatus.Invalid.GenericError(
+                        error = "Received empty response from Gemini API.",
+                        actionableTip = "Google servers returned HTTP 200 without candidate content. Check API permissions."
+                    )
                 }
-                ApiKeyStatus.Invalid(msg)
+            } else {
+                val errorObj = try {
+                    val root = JSONObject(responseBody)
+                    root.optJSONObject("error")
+                } catch (e: Exception) {
+                    null
+                }
+                val rawMessage = errorObj?.optString("message", "") ?: ""
+                val status = errorObj?.optString("status", "") ?: ""
+
+                when {
+                    responseCode == 400 || status == "INVALID_ARGUMENT" ||
+                    rawMessage.contains("API key not valid", ignoreCase = true) ||
+                    rawMessage.contains("API_KEY_INVALID", ignoreCase = true) -> {
+                        ApiKeyStatus.Invalid.BadKey(
+                            error = "Invalid API Key: Rejected by Google Gemini (HTTP 400).",
+                            actionableTip = "Ensure you copied the entire key starting with 'AIzaSy...' without extra spaces."
+                        )
+                    }
+                    responseCode == 403 || status == "PERMISSION_DENIED" -> {
+                        ApiKeyStatus.Invalid.BadKey(
+                            error = "Permission Denied: API key blocked or missing access (HTTP 403).",
+                            actionableTip = "Verify that Generative Language API is enabled in your Google Cloud / AI Studio project."
+                        )
+                    }
+                    responseCode == 404 || status == "NOT_FOUND" || rawMessage.contains("not found", ignoreCase = true) -> {
+                        ApiKeyStatus.Invalid.ModelUnsupported(
+                            error = "Model '$model' Not Found: Model unavailable for this key/region (HTTP 404).",
+                            actionableTip = "Switch back to 'gemini-3.8-flash' or another supported model in settings."
+                        )
+                    }
+                    responseCode == 429 || status == "RESOURCE_EXHAUSTED" ||
+                    rawMessage.contains("quota", ignoreCase = true) ||
+                    rawMessage.contains("rate limit", ignoreCase = true) -> {
+                        ApiKeyStatus.Invalid.QuotaExceeded(
+                            error = "Quota Exceeded: Rate limit or daily token quota reached (HTTP 429).",
+                            actionableTip = "Wait 60 seconds before making another request, or check your quota at https://aistudio.google.com."
+                        )
+                    }
+                    responseCode in 500..599 -> {
+                        ApiKeyStatus.Invalid.GenericError(
+                            error = "Google Gemini Service Unavailable (HTTP $responseCode).",
+                            actionableTip = "Google's AI servers are temporarily experiencing downtime. Please retry in a few moments."
+                        )
+                    }
+                    else -> {
+                        val displayError = rawMessage.ifBlank { "HTTP $responseCode unexpected response" }
+                        ApiKeyStatus.Invalid.GenericError(
+                            error = "Connection Failed: $displayError",
+                            actionableTip = "Please verify your API key and network settings."
+                        )
+                    }
+                }
             }
+        } catch (e: java.net.UnknownHostException) {
+            ApiKeyStatus.Invalid.NetworkError(
+                error = "Network Error: Could not resolve Google Gemini servers.",
+                actionableTip = "Check your device's Wi-Fi or mobile data connection and try again."
+            )
+        } catch (e: java.net.SocketTimeoutException) {
+            ApiKeyStatus.Invalid.NetworkError(
+                error = "Network Timeout: Google Gemini servers did not respond in time.",
+                actionableTip = "Your connection may be slow or unstable. Try again in a moment."
+            )
+        } catch (e: java.io.IOException) {
+            ApiKeyStatus.Invalid.NetworkError(
+                error = "Network Error: ${e.message ?: "Failed to connect to Google servers"}.",
+                actionableTip = "Check your internet connection and firewall settings."
+            )
         } catch (e: Exception) {
-            ApiKeyStatus.Invalid(e.localizedMessage ?: "Network connection error")
+            ApiKeyStatus.Invalid.GenericError(
+                error = "Unexpected error: ${e.message ?: "Unknown issue"}",
+                actionableTip = "Please check your settings and retry."
+            )
         }
     }
 

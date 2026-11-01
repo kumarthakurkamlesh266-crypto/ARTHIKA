@@ -23,7 +23,7 @@ class PerformanceBenchmarkTest {
         val startFast = System.nanoTime()
         for (i in 0 until iterations) {
             val formatted = FastFormatters.formatCurrency(i * 1.25)
-            assertTrue(formatted.startsWith("$"))
+            assertTrue(formatted.startsWith("₹"))
         }
         val durationFastMs = (System.nanoTime() - startFast) / 1_000_000
 
@@ -34,8 +34,8 @@ class PerformanceBenchmarkTest {
                 minimumFractionDigits = 2
                 maximumFractionDigits = 2
             }
-            val formatted = "$${formatter.format(i * 1.25)}"
-            assertTrue(formatted.startsWith("$"))
+            val formatted = "₹${formatter.format(i * 1.25)}"
+            assertTrue(formatted.startsWith("₹"))
         }
         val durationSlowMs = (System.nanoTime() - startSlow) / 1_000_000
 

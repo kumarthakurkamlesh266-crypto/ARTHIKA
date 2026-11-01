@@ -277,13 +277,14 @@ fun LuminaApp(viewModel: FinanceViewModel = viewModel()) {
         isOpen = isSettingsOpen,
         currentBudget = budget,
         currentApiKey = viewModel.getSavedApiKey(),
+        currentModel = viewModel.getSelectedModel(),
         onDismiss = { isSettingsOpen = false },
-        onTestApiKey = { key -> viewModel.testApiKey(key) },
-        onSaveSettings = { limit, currency, pin, isPinEnabled, name, apiKey ->
-            viewModel.updateBudgetSettings(limit, currency, pin, isPinEnabled, name, apiKey)
+        onTestApiKey = { key, model -> viewModel.testApiKey(key, model) },
+        onSaveSettings = { limit, currency, pin, isPinEnabled, name, apiKey, model ->
+            viewModel.updateBudgetSettings(limit, currency, pin, isPinEnabled, name, apiKey, model)
             isSettingsOpen = false
             scope.launch {
-                snackbarHostState.showSnackbar("Preferences & API key saved")
+                snackbarHostState.showSnackbar("Preferences & AI Config saved")
             }
         }
     )

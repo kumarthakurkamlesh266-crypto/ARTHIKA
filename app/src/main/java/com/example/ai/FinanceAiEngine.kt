@@ -19,6 +19,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import com.example.ui.components.IndianCurrencyFormatter
 
 data class AiResponse(
     val replyText: String,
@@ -37,7 +38,9 @@ class FinanceAiEngine(private val context: Context) {
             .build()
     }
 
-    private val currencyFormat = NumberFormat.getCurrencyInstance(Locale.US)
+    private val currencyFormat = object {
+        fun format(amount: Double): String = IndianCurrencyFormatter.format(amount, "₹")
+    }
     private val db by lazy { com.example.data.AppDatabase.getInstance(context) }
     private val accountingEngine by lazy { com.example.accounting.AccountingEngine(db) }
     private val reconciliationEngine by lazy { com.example.accounting.ReconciliationEngine(db) }
@@ -565,8 +568,10 @@ class FinanceAiEngine(private val context: Context) {
                 put("contents", contents)
             }
 
+            val model = GeminiConfig.getModel(context)
+            val requestUrl = GeminiConfig.getGenerateContentUrl(apiKey, model)
             val request = Request.Builder()
-                .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey")
+                .url(requestUrl)
                 .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 

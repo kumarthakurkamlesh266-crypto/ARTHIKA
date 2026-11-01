@@ -286,7 +286,7 @@ fun AddEditTransactionSheet(
                 placeholder = { Text("0.00", style = MaterialTheme.typography.headlineMedium.copy(color = ArthikaBorder)) },
                 prefix = {
                     Text(
-                        text = "$",
+                        text = "₹",
                         style = MaterialTheme.typography.headlineMedium.copy(
                             fontWeight = FontWeight.Medium,
                             color = if (selectedType == TransactionType.INCOME) ArthikaIncome else ArthikaExpense
