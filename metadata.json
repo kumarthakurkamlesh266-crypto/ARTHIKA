@@ -1,0 +1,6 @@
+{
+  "name": "ARTHIKA",
+  "description": "Minimal, premium AI-powered personal finance and expense tracking application with receipt scanning, natural language assistant, and PDF reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
