@@ -7,6 +7,8 @@ import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
 import android.util.Base64
+import android.util.Log
+import com.example.ai.GeminiConfig
 import com.example.data.ApiKeyManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -22,6 +24,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.regex.Pattern
 
 data class ExtractedReceipt(
     val merchant: String,
@@ -38,6 +41,64 @@ data class ExtractedReceipt(
     val errorMessage: String? = null
 )
 
+/**
+ * Structured Neural Schema specification for Gemini Vision OCR extraction.
+ * Guaranteed typed extraction for merchant, amount, category, date, and line items.
+ */
+object ReceiptNeuralSchema {
+    fun buildSchema(): JSONObject {
+        return JSONObject().apply {
+            put("type", "OBJECT")
+            put("properties", JSONObject().apply {
+                put("merchant", JSONObject().apply {
+                    put("type", "STRING")
+                    put("description", "Name of the merchant, store, vendor, or billing entity.")
+                })
+                put("amount", JSONObject().apply {
+                    put("type", "NUMBER")
+                    put("description", "The final total bill amount as a positive numeric number (e.g. 249.50), without any currency symbols.")
+                })
+                put("date", JSONObject().apply {
+                    put("type", "STRING")
+                    put("description", "Transaction date strictly formatted as YYYY-MM-DD.")
+                })
+                put("time", JSONObject().apply {
+                    put("type", "STRING")
+                    put("description", "Transaction time in 24-hour HH:mm format (e.g. 14:30).")
+                })
+                put("category", JSONObject().apply {
+                    put("type", "STRING")
+                    put("description", "Expense category. Must be one of: Food, Transport, Shopping, Education, Entertainment, Bills, Health, Personal, Other.")
+                })
+                put("items", JSONObject().apply {
+                    put("type", "ARRAY")
+                    put("items", JSONObject().apply {
+                        put("type", "STRING")
+                    })
+                    put("description", "List of purchased items and their prices.")
+                })
+                put("paymentMethod", JSONObject().apply {
+                    put("type", "STRING")
+                    put("description", "Payment method detected e.g. UPI, Credit Card, Debit Card, Cash, Net Banking.")
+                })
+                put("invoiceNumber", JSONObject().apply {
+                    put("type", "STRING")
+                    put("description", "Invoice, receipt, or transaction reference number.")
+                })
+                put("confidence", JSONObject().apply {
+                    put("type", "NUMBER")
+                    put("description", "Confidence score between 0.0 and 1.0.")
+                })
+            })
+            put("required", JSONArray().apply {
+                put("merchant")
+                put("amount")
+                put("category")
+            })
+        }
+    }
+}
+
 class ReceiptScannerService(private val context: Context) {
 
     private val apiKeyManager by lazy { ApiKeyManager(context) }
@@ -46,59 +107,70 @@ class ReceiptScannerService(private val context: Context) {
         OkHttpClient.Builder()
             .connectTimeout(25, TimeUnit.SECONDS)
             .readTimeout(35, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .build()
     }
 
     suspend fun processReceiptUri(uri: Uri): ExtractedReceipt = withContext(Dispatchers.IO) {
         val bitmap = loadAndOrientBitmap(uri)
-        val apiKey = apiKeyManager.getApiKey()
-
-        if (bitmap != null && apiKey.isNotBlank() && !apiKey.contains("MY_GEMINI_API_KEY")) {
-            val geminiResult = callGeminiVision(bitmap, apiKey, uri.toString())
-            if (geminiResult != null) {
-                return@withContext geminiResult
-            }
+        if (bitmap == null) {
+            return@withContext fallbackLocalReceiptExtraction(
+                imageUri = uri.toString(),
+                customErrorMessage = "Could not decode receipt image. Please ensure the file is an accessible JPEG, PNG, or WEBP photo."
+            )
         }
 
-        // Fallback when no API key configured or offline
-        return@withContext fallbackLocalReceiptExtraction(uri.toString(), apiKey.isBlank())
+        val apiKey = apiKeyManager.getApiKey()
+        if (apiKey.isBlank() || apiKey.contains("MY_GEMINI_API_KEY")) {
+            return@withContext fallbackLocalReceiptExtraction(
+                imageUri = uri.toString(),
+                customErrorMessage = "Please add your Google Gemini API Key in Settings to enable AI OCR scanning."
+            )
+        }
+
+        // Attempt Gemini Vision extraction with Neural Schema & fallback hierarchy
+        val extractionResult = callGeminiVisionWithFallbacks(bitmap, apiKey, uri.toString())
+        return@withContext extractionResult ?: fallbackLocalReceiptExtraction(
+            imageUri = uri.toString(),
+            customErrorMessage = "OCR processing failed across AI models. Please verify your internet connection or Gemini API key quota."
+        )
     }
 
     fun getSampleReceiptPresets(): List<ExtractedReceipt> {
         val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
         return listOf(
             ExtractedReceipt(
-                merchant = "Trader Joe's",
-                amount = 47.85,
+                merchant = "Reliance Fresh / Supermarket",
+                amount = 1485.50,
                 dateString = today,
                 timeString = "14:15",
                 category = "Food",
-                items = listOf("Organic Sourdough Bread ($4.99)", "Greek Yogurt 32oz ($5.49)", "Fair Trade Cold Brew ($3.99)", "Wild Salmon Fillets ($18.90)", "Organic Spinach & Kale ($4.49)"),
+                items = listOf("Aashirvaad Whole Wheat Atta 5kg (₹245.00)", "Amul Butter 500g (₹275.00)", "Tata Tea Gold 500g (₹310.00)", "Fresh Vegetables & Fruits (₹655.50)"),
                 confidence = 0.98f,
                 isAiPowered = true,
-                detectedPaymentMethod = "Credit Card"
+                detectedPaymentMethod = "UPI"
             ),
             ExtractedReceipt(
-                merchant = "Apple Store Retail",
-                amount = 129.00,
+                merchant = "Croma Electronics",
+                amount = 2499.00,
                 dateString = today,
                 timeString = "16:40",
                 category = "Shopping",
-                items = listOf("MagSafe Duo Wireless Charger ($129.00)"),
+                items = listOf("Noise ColorFit Smartwatch (₹2,499.00)"),
                 confidence = 0.99f,
                 isAiPowered = true,
-                detectedPaymentMethod = "Apple Pay"
+                detectedPaymentMethod = "Credit Card"
             ),
             ExtractedReceipt(
-                merchant = "Blue Bottle Coffee",
-                amount = 18.25,
+                merchant = "Blue Tokai Coffee Roasters",
+                amount = 485.00,
                 dateString = today,
                 timeString = "08:50",
                 category = "Food",
-                items = listOf("Bella Donovan Pour Over ($6.50)", "Almond Milk Gibraltar ($5.75)", "Cardamom Morning Bun ($6.00)"),
+                items = listOf("Iced Latte (₹240.00)", "Almond Croissant (₹245.00)"),
                 confidence = 0.95f,
                 isAiPowered = true,
-                detectedPaymentMethod = "Credit Card"
+                detectedPaymentMethod = "UPI"
             )
         )
     }
@@ -107,39 +179,65 @@ class ReceiptScannerService(private val context: Context) {
         return try {
             // First read orientation
             var orientation = ExifInterface.ORIENTATION_NORMAL
-            context.contentResolver.openInputStream(uri)?.use { stream ->
-                val exif = ExifInterface(stream)
-                orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            try {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val exif = ExifInterface(stream)
+                    orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                }
+            } catch (e: Exception) {
+                Log.w("ReceiptScanner", "Failed to read EXIF orientation: ${e.message}")
             }
 
-            // Decode image
-            val inputStream: InputStream = context.contentResolver.openInputStream(uri) ?: return null
-            val fullBitmap: Bitmap? = BitmapFactory.decodeStream(inputStream)
-            try { inputStream.close() } catch (e: Exception) {}
-            if (fullBitmap == null) return null
+            // Decode image bounds first to compute sample size (prevent OOM)
+            val options = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, options)
+            }
+
+            val maxTargetDim = 1536
+            var sampleSize = 1
+            var w = options.outWidth
+            var h = options.outHeight
+
+            while (w / 2 >= maxTargetDim || h / 2 >= maxTargetDim) {
+                w /= 2
+                h /= 2
+                sampleSize *= 2
+            }
+
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+
+            val fullBitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, decodeOptions)
+            } ?: return null
 
             val orientedBitmap = applyExifOrientation(fullBitmap, orientation)
 
-            // Scale to max 1536px for high OCR legibility while remaining fast
-            val maxDim = 1536
-            val width = orientedBitmap.width
-            val height = orientedBitmap.height
-            if (width <= maxDim && height <= maxDim) {
+            // Final scale if still above maxDim
+            val curW = orientedBitmap.width
+            val curH = orientedBitmap.height
+            if (curW <= maxTargetDim && curH <= maxTargetDim) {
                 return orientedBitmap
             }
 
-            val ratio = width.toFloat() / height.toFloat()
+            val ratio = curW.toFloat() / curH.toFloat()
             val newW: Int
             val newH: Int
             if (ratio > 1) {
-                newW = maxDim
-                newH = (maxDim / ratio).toInt()
+                newW = maxTargetDim
+                newH = (maxTargetDim / ratio).toInt()
             } else {
-                newH = maxDim
-                newW = (maxDim * ratio).toInt()
+                newH = maxTargetDim
+                newW = (maxTargetDim * ratio).toInt()
             }
             Bitmap.createScaledBitmap(orientedBitmap, newW, newH, true)
         } catch (e: Exception) {
+            Log.e("ReceiptScanner", "Error decoding receipt image: ${e.message}", e)
             null
         }
     }
@@ -161,48 +259,100 @@ class ReceiptScannerService(private val context: Context) {
         }
     }
 
-    private fun callGeminiVision(bitmap: Bitmap, apiKey: String, imageUri: String): ExtractedReceipt? {
-        try {
-            val stream = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
-            val bytes = stream.toByteArray()
-            val base64Image = Base64.encodeToString(bytes, Base64.NO_WRAP)
+    /**
+     * Executes vision analysis against Gemini using the Neural Schema.
+     * Implements fallback across models (gemini-3.8-flash -> gemini-2.5-flash -> gemini-1.5-flash)
+     * and fallback without responseSchema if older endpoints return 400.
+     */
+    private fun callGeminiVisionWithFallbacks(
+        bitmap: Bitmap,
+        apiKey: String,
+        imageUri: String
+    ): ExtractedReceipt? {
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 88, stream)
+        val bytes = stream.toByteArray()
+        val base64Image = Base64.encodeToString(bytes, Base64.NO_WRAP)
 
-            val prompt = """
-                You are a world-class financial OCR parser for personal expense tracking.
-                Analyze the provided receipt, invoice, or bill image thoroughly.
-                
-                Extract:
-                1. Merchant / Store / Company / Vendor name.
-                2. Final Total Amount (numeric number only, e.g. 45.50. Ignore currency signs $, ₹, €, £, CAD, INR, Rs, etc.).
-                3. Date in YYYY-MM-DD format (if only DD/MM/YY or MM/DD/YYYY is shown, convert correctly). If no date is found, use today's date.
-                4. Time in HH:mm 24-hour format (e.g. 14:30). If not visible, use current time or 12:00.
-                5. Best financial Category strictly from this list: ["Food", "Transport", "Shopping", "Education", "Entertainment", "Bills", "Health", "Personal", "Other"].
-                   - Supermarkets, restaurants, cafes, groceries -> "Food"
-                   - Uber, taxi, gas, flights, trains, parking -> "Transport"
-                   - Clothes, electronics, retail goods -> "Shopping"
-                   - Electricity, internet, mobile recharge, rent, utilities -> "Bills"
-                   - Pharmacy, hospital, gym, wellness -> "Health"
-                   - Movies, subscriptions, games -> "Entertainment"
-                6. Items: An array of item names with their individual price (e.g. ["Latte - $4.50", "Croissant - $3.75"]).
-                7. Payment method: (e.g. "Credit Card", "Debit Card", "Cash", "UPI", "Apple Pay").
-                8. Invoice or receipt number if visible.
-                9. Confidence score between 0.0 and 1.0.
+        val prompt = """
+            You are ARTHIKA AI Neural OCR Engine, specialized in parsing receipts, bills, invoices, and transaction slips.
+            Examine this receipt image with extreme precision.
+            
+            Extract the following structured fields:
+            1. merchant: The name of the store, merchant, company, or vendor.
+            2. amount: The final total payable amount as a positive numeric number only (e.g. 450.00). Ignore currency symbols (₹, $, Rs., etc.).
+            3. date: Transaction date formatted strictly as YYYY-MM-DD. Convert DD/MM/YYYY or MM/DD/YYYY appropriately. If date is not visible, use today's date.
+            4. time: Transaction time in HH:mm 24-hour format (e.g. 14:30). If not visible, use 12:00.
+            5. category: Choose strictly from ["Food", "Transport", "Shopping", "Education", "Entertainment", "Bills", "Health", "Personal", "Other"].
+            6. items: Array of line items with item name and price (e.g. ["Milk - ₹65.00", "Bread - ₹45.00"]).
+            7. paymentMethod: Payment method detected (e.g. "UPI", "Credit Card", "Debit Card", "Cash").
+            8. invoiceNumber: Invoice or receipt ID if shown.
+            9. confidence: Float score between 0.0 and 1.0 indicating clarity.
+            
+            Return strictly valid JSON adhering to the neural schema.
+        """.trimIndent()
 
-                IMPORTANT: Return ONLY valid raw JSON with NO markdown code blocks, NO ```json backticks:
-                {
-                  "merchant": "Vendor Name",
-                  "amount": 0.00,
-                  "date": "YYYY-MM-DD",
-                  "time": "HH:MM",
-                  "category": "Food",
-                  "items": ["Item name and price"],
-                  "paymentMethod": "Credit Card",
-                  "invoiceNumber": "",
-                  "confidence": 0.98
+        val primaryModel = GeminiConfig.getModel(context)
+        val candidateModels = listOf(
+            primaryModel,
+            "gemini-3.8-flash",
+            "gemini-2.5-flash",
+            "gemini-1.5-flash"
+        ).distinct()
+
+        var lastErrorMessage: String? = null
+
+        for (model in candidateModels) {
+            // First try with strict Neural Schema
+            val resultWithSchema = tryCallGemini(
+                model = model,
+                apiKey = apiKey,
+                prompt = prompt,
+                base64Image = base64Image,
+                imageUri = imageUri,
+                useResponseSchema = true
+            )
+            if (resultWithSchema.receipt != null) {
+                return resultWithSchema.receipt
+            }
+            lastErrorMessage = resultWithSchema.errorMessage
+
+            // If 400 Bad Request or Schema error, retry on same model without responseSchema
+            if (resultWithSchema.shouldRetryWithoutSchema) {
+                val resultPlain = tryCallGemini(
+                    model = model,
+                    apiKey = apiKey,
+                    prompt = prompt,
+                    base64Image = base64Image,
+                    imageUri = imageUri,
+                    useResponseSchema = false
+                )
+                if (resultPlain.receipt != null) {
+                    return resultPlain.receipt
                 }
-            """.trimIndent()
+                lastErrorMessage = resultPlain.errorMessage
+            }
+        }
 
+        // If all candidate models failed, return fallback with detailed actionable error
+        return fallbackLocalReceiptExtraction(imageUri, customErrorMessage = lastErrorMessage)
+    }
+
+    private data class CallAttemptResult(
+        val receipt: ExtractedReceipt? = null,
+        val shouldRetryWithoutSchema: Boolean = false,
+        val errorMessage: String? = null
+    )
+
+    private fun tryCallGemini(
+        model: String,
+        apiKey: String,
+        prompt: String,
+        base64Image: String,
+        imageUri: String,
+        useResponseSchema: Boolean
+    ): CallAttemptResult {
+        return try {
             val jsonBody = JSONObject().apply {
                 val contents = JSONArray().apply {
                     put(JSONObject().apply {
@@ -210,82 +360,151 @@ class ReceiptScannerService(private val context: Context) {
                             put(JSONObject().apply {
                                 put("text", prompt)
                             })
+                            // Google Gemini API specification: camelCase inlineData and mimeType
                             put(JSONObject().apply {
                                 val inlineData = JSONObject().apply {
-                                    put("mime_type", "image/jpeg")
+                                    put("mimeType", "image/jpeg")
                                     put("data", base64Image)
                                 }
-                                put("inline_data", inlineData)
+                                put("inlineData", inlineData)
                             })
                         }
                         put("parts", parts)
                     })
                 }
                 put("contents", contents)
-                put("generationConfig", JSONObject().apply {
+
+                val genConfig = JSONObject().apply {
                     put("temperature", 0.1)
                     put("responseMimeType", "application/json")
-                })
+                    if (useResponseSchema) {
+                        put("responseSchema", ReceiptNeuralSchema.buildSchema())
+                    }
+                }
+                put("generationConfig", genConfig)
             }
 
-            val model = com.example.ai.GeminiConfig.getModel(context)
-            val requestUrl = com.example.ai.GeminiConfig.getGenerateContentUrl(apiKey, model)
+            val requestUrl = GeminiConfig.getGenerateContentUrl(apiKey, model)
             val request = Request.Builder()
                 .url(requestUrl)
                 .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
             val response = httpClient.newCall(request).execute()
+            val code = response.code
+            val bodyStr = response.body?.string().orEmpty()
+
             if (response.isSuccessful) {
-                val bodyStr = response.body?.string() ?: return null
                 val rootJson = JSONObject(bodyStr)
-                val candidates = rootJson.optJSONArray("candidates") ?: return null
-                if (candidates.length() > 0) {
+                val candidates = rootJson.optJSONArray("candidates")
+                if (candidates != null && candidates.length() > 0) {
                     val candidate = candidates.getJSONObject(0)
                     val contentObj = candidate.optJSONObject("content")
                     val parts = contentObj?.optJSONArray("parts")
                     if (parts != null && parts.length() > 0) {
-                        var rawText = parts.getJSONObject(0).optString("text").trim()
-                        if (rawText.startsWith("```json")) {
-                            rawText = rawText.removePrefix("```json").removeSuffix("```").trim()
-                        } else if (rawText.startsWith("```")) {
-                            rawText = rawText.removePrefix("```").removeSuffix("```").trim()
+                        val rawText = parts.getJSONObject(0).optString("text").trim()
+                        val extractedJson = parseCleanJson(rawText)
+                        if (extractedJson != null) {
+                            val receipt = mapJsonToReceipt(extractedJson, imageUri)
+                            return CallAttemptResult(receipt = receipt)
                         }
-                        val extractedJson = JSONObject(rawText)
-                        val itemsArray = extractedJson.optJSONArray("items")
-                        val itemsList = mutableListOf<String>()
-                        if (itemsArray != null) {
-                            for (i in 0 until itemsArray.length()) {
-                                itemsList.add(itemsArray.getString(i))
-                            }
-                        }
-
-                        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-                        val nowTime = SimpleDateFormat("HH:mm", Locale.US).format(Date())
-
-                        return ExtractedReceipt(
-                            merchant = extractedJson.optString("merchant", "Receipt Vendor").trim().ifBlank { "Receipt Vendor" },
-                            amount = extractedJson.optDouble("amount", 0.0),
-                            dateString = extractedJson.optString("date", today).trim().ifBlank { today },
-                            timeString = extractedJson.optString("time", nowTime).trim().ifBlank { nowTime },
-                            category = extractedJson.optString("category", "Shopping"),
-                            items = itemsList,
-                            confidence = extractedJson.optDouble("confidence", 0.95).toFloat(),
-                            receiptImageUri = imageUri,
-                            isAiPowered = true,
-                            detectedPaymentMethod = extractedJson.optString("paymentMethod", "Credit Card"),
-                            invoiceNumber = extractedJson.optString("invoiceNumber", "")
-                        )
                     }
                 }
+                CallAttemptResult(errorMessage = "Empty OCR response returned from Gemini ($model).")
+            } else {
+                val errorMsg = extractGoogleErrorMessage(bodyStr, code, model)
+                val isSchemaError = code == 400 && (bodyStr.contains("response_schema", ignoreCase = true) || bodyStr.contains("responseSchema", ignoreCase = true))
+                CallAttemptResult(
+                    receipt = null,
+                    shouldRetryWithoutSchema = isSchemaError || (code == 400 && useResponseSchema),
+                    errorMessage = errorMsg
+                )
             }
-            return null
         } catch (e: Exception) {
-            return null
+            Log.e("ReceiptScanner", "Exception during Gemini OCR call ($model): ${e.message}", e)
+            CallAttemptResult(errorMessage = "Network connection failed: ${e.message}")
         }
     }
 
-    private fun fallbackLocalReceiptExtraction(imageUri: String, isApiKeyMissing: Boolean): ExtractedReceipt {
+    private fun parseCleanJson(text: String): JSONObject? {
+        var clean = text.trim()
+        if (clean.startsWith("```json")) {
+            clean = clean.removePrefix("```json").removeSuffix("```").trim()
+        } else if (clean.startsWith("```")) {
+            clean = clean.removePrefix("```").removeSuffix("```").trim()
+        }
+
+        // Try direct parse
+        try {
+            return JSONObject(clean)
+        } catch (e: Exception) {
+            // Regex match first '{' to last '}'
+            val pattern = Pattern.compile("\\{.*\\}", Pattern.DOTALL)
+            val matcher = pattern.matcher(clean)
+            if (matcher.find()) {
+                val candidate = matcher.group()
+                return try {
+                    JSONObject(candidate)
+                } catch (e2: Exception) {
+                    null
+                }
+            }
+        }
+        return null
+    }
+
+    private fun mapJsonToReceipt(json: JSONObject, imageUri: String): ExtractedReceipt {
+        val itemsArray = json.optJSONArray("items")
+        val itemsList = mutableListOf<String>()
+        if (itemsArray != null) {
+            for (i in 0 until itemsArray.length()) {
+                itemsList.add(itemsArray.optString(i))
+            }
+        }
+
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        val nowTime = SimpleDateFormat("HH:mm", Locale.US).format(Date())
+
+        val rawAmount = json.optDouble("amount", 0.0)
+        val validAmount = if (rawAmount.isNaN() || rawAmount < 0) 0.0 else rawAmount
+
+        return ExtractedReceipt(
+            merchant = json.optString("merchant", "Receipt Vendor").trim().ifBlank { "Receipt Vendor" },
+            amount = validAmount,
+            dateString = json.optString("date", today).trim().ifBlank { today },
+            timeString = json.optString("time", nowTime).trim().ifBlank { nowTime },
+            category = json.optString("category", "Shopping").trim().ifBlank { "Shopping" },
+            items = itemsList,
+            confidence = json.optDouble("confidence", 0.96).toFloat().coerceIn(0.1f, 1.0f),
+            receiptImageUri = imageUri,
+            isAiPowered = true,
+            detectedPaymentMethod = json.optString("paymentMethod", "UPI"),
+            invoiceNumber = json.optString("invoiceNumber", "")
+        )
+    }
+
+    private fun extractGoogleErrorMessage(body: String, code: Int, model: String): String {
+        return try {
+            val root = JSONObject(body)
+            val error = root.optJSONObject("error")
+            val msg = error?.optString("message", "") ?: ""
+            when {
+                code == 400 -> "Google API Rejected Request (HTTP 400): ${msg.take(120)}"
+                code == 403 -> "API Key Permission Denied (HTTP 403). Ensure Generative Language API is active."
+                code == 404 -> "Model '$model' not found (HTTP 404). Trying alternate models."
+                code == 429 -> "Quota or rate limit reached (HTTP 429). Please wait a moment."
+                code in 500..599 -> "Google Cloud service unavailable (HTTP $code). Retrying."
+                else -> "Gemini API error (HTTP $code): ${msg.take(100)}"
+            }
+        } catch (e: Exception) {
+            "HTTP $code error from Gemini ($model)"
+        }
+    }
+
+    private fun fallbackLocalReceiptExtraction(
+        imageUri: String,
+        customErrorMessage: String? = null
+    ): ExtractedReceipt {
         val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
         val timeNow = SimpleDateFormat("HH:mm", Locale.US).format(Date())
         return ExtractedReceipt(
@@ -298,11 +517,7 @@ class ReceiptScannerService(private val context: Context) {
             confidence = 0.70f,
             receiptImageUri = imageUri,
             isAiPowered = false,
-            errorMessage = if (isApiKeyMissing) {
-                "Add your Gemini API Key in Settings for instant AI-powered automatic OCR parsing."
-            } else {
-                "Unable to connect to Gemini API. Please verify your network connection or API Key in Settings."
-            }
+            errorMessage = customErrorMessage ?: "Add your Gemini API Key in Settings for instant AI-powered automatic OCR parsing."
         )
     }
 }
